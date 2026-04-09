@@ -1,10 +1,15 @@
 """ACC Coaching Backend API."""
 import structlog
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from auth import verify_api_key
 from routers.health import router as health_router
+from routers.analysis import router as analysis_router
+from routers.laps import router as laps_router
+from routers.reference_laps import router as reference_laps_router
+from routers.sessions import router as sessions_router
 
 structlog.configure(
     processors=[
@@ -34,8 +39,11 @@ app.add_middleware(
 # Health check does NOT require auth
 app.include_router(health_router, prefix="/api/v1")
 
-# Future routers (T1.5) will be added here with auth dependency:
-# app.include_router(sessions_router, prefix="/api/v1", dependencies=[Depends(verify_api_key)])
+api_key_dep = Depends(verify_api_key)
+app.include_router(sessions_router, prefix="/api/v1", dependencies=[api_key_dep])
+app.include_router(laps_router, prefix="/api/v1", dependencies=[api_key_dep])
+app.include_router(analysis_router, prefix="/api/v1", dependencies=[api_key_dep])
+app.include_router(reference_laps_router, prefix="/api/v1", dependencies=[api_key_dep])
 
 
 @app.on_event("startup")
