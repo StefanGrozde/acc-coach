@@ -1,0 +1,10 @@
+[project]
+name = "acc-shared"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["pydantic>=2.0"]
+
+[build-system]
+requires = []
+build-backend = "build_backend"
+backend-path = ["."]
