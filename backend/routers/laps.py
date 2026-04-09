@@ -35,7 +35,7 @@ async def create_lap(payload: LapSummary, db: AsyncSession = Depends(get_db)) ->
         circuit=payload.circuit,
         car_model=payload.car_model,
         recorded_at=payload.recorded_at,
-        summary=payload.model_dump(),
+        summary=payload.model_dump(mode="json"),
     )
     db.add(lap)
     await db.commit()

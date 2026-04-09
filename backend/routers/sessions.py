@@ -5,6 +5,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.session import get_db
@@ -50,11 +51,6 @@ async def create_session(
     response: Response,
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, object | None]:
-    existing = await db.scalar(select(SessionModel).where(SessionModel.session_id == payload.session_id))
-    if existing is not None:
-        response.status_code = status.HTTP_200_OK
-        return _serialize_session(existing)
-
     session = SessionModel(
         session_id=payload.session_id,
         session_type=payload.session_type,
@@ -62,10 +58,18 @@ async def create_session(
         car_model=payload.car_model,
         started_at=payload.started_at,
     )
-    db.add(session)
-    await db.commit()
-    await db.refresh(session)
-    return _serialize_session(session)
+    try:
+        db.add(session)
+        await db.commit()
+        await db.refresh(session)
+        return _serialize_session(session)
+    except IntegrityError:
+        await db.rollback()
+        existing = await db.scalar(select(SessionModel).where(SessionModel.session_id == payload.session_id))
+        if existing is not None:
+            response.status_code = status.HTTP_200_OK
+            return _serialize_session(existing)
+        raise
 
 
 @router.get("/sessions/{session_id}", response_model=SessionRead)
