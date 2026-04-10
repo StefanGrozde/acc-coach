@@ -157,6 +157,7 @@ class BackendDataViewer(QWidget):
         self._laps: list[dict[str, Any]] = []
         self._graph_window: QWidget | None = None
         self._local_laps: list[dict[str, Any]] = []
+        self._live_window: QWidget | None = None
 
         self._status_label = QLabel("Ready.")
         self._status_label.setWordWrap(True)
@@ -166,6 +167,9 @@ class BackendDataViewer(QWidget):
 
         self._local_button = QPushButton("Load Local Laps")
         self._local_button.clicked.connect(self.load_local_laps)
+
+        self._live_button = QPushButton("Live Graph")
+        self._live_button.clicked.connect(self.open_live_graph)
 
         self._sessions_list = QListWidget()
         self._sessions_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -206,6 +210,7 @@ class BackendDataViewer(QWidget):
         controls = QHBoxLayout()
         controls.addWidget(self._refresh_button)
         controls.addWidget(self._local_button)
+        controls.addWidget(self._live_button)
         controls.addStretch(1)
         controls.addWidget(self._status_label)
 
@@ -436,6 +441,22 @@ class BackendDataViewer(QWidget):
         window.activateWindow()
         self._set_status(f"Opened lap {lap_number} for {session_id} in the graph window.")
 
+    def open_live_graph(self) -> None:
+        try:
+            from overlay.widgets.floating_live_window import FloatingLiveWindow
+        except Exception as exc:
+            self._set_status(f"Failed to open live graph: {exc}")
+            return
+
+        if self._live_window is None:
+            self._live_window = FloatingLiveWindow()
+            self._live_window.destroyed.connect(lambda: setattr(self, "_live_window", None))
+
+        self._live_window.show()
+        self._live_window.raise_()
+        self._live_window.activateWindow()
+        self._set_status("Opened live inputs graph.")
+
     def _current_session(self) -> dict[str, Any] | None:
         current_item = self._sessions_list.currentItem()
         if current_item is None:
@@ -471,4 +492,7 @@ class BackendDataViewer(QWidget):
         if self._graph_window is not None:
             self._graph_window.close()
             self._graph_window = None
+        if self._live_window is not None:
+            self._live_window.close()
+            self._live_window = None
         super().closeEvent(event)
