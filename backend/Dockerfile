@@ -2,6 +2,9 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Install build dependencies
+RUN pip install --no-cache-dir setuptools wheel
+
 # Install shared package first (for caching)
 COPY shared/ ./shared/
 RUN pip install --no-cache-dir -e ./shared

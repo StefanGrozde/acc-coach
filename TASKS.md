@@ -82,6 +82,38 @@ PR: https://github.com/StefanGrozde/acc-coach/pull/2
 
 ---
 
+### Sprint 3 — Lap Summarization & Upload Pipeline ✓
+Branch: `sprint-3-client-summarization` → Merged to `main`
+Status: DONE (2026-04-10)
+
+**Summary**: Implemented full lap summarization with corner segmentation, sector time detection, and real LapSummary generation, re-enabled backend uploads, and added manual recording control.
+
+**Tasks Completed**:
+- T3.1 — Captured sector split data (`current_sector_index`, `last_sector_time`) in graphics poller
+- T3.2 — Read `sectorCount` from static data to support track-specific sector counts
+- T3.3 — Wired `summarize_lap()` into lap finalization with proper `LapSummary` JSON serialization
+- T3.4 — Persisted full telemetry fields (tyre temps, pressures, wear, fuel, wheel slip) for summarization
+- T3.5 — Re-enabled and verified backend uploads with `upload_enabled` config option
+- T3.6 — Added manual recording toggle button with visual indicator in UI
+
+**Key Files Created/Modified**:
+- `client/recorder/summarizer.py` — Full corner segmentation, sector time derivation, telemetry aggregation
+- `client/recorder/lap_recorder.py` — Real summarization integration, recording toggle, sector count handling
+- `client/poller/graphics_poller.py` — Sector split data capture
+- `client/overlay/data_viewer.py` — Recording toggle button UI
+- `client/sync/uploader.py` — Upload verification with real `LapSummary` objects
+
+**Bugs Fixed**:
+- Pause state recording: Fixed lap finalization on game pause by treating `ACC_PAUSE` as live state (lines 148, 174)
+- Session refresh: Clarified remote vs local data source behavior in data viewer UI
+
+**Suggested Next Priorities (post-Sprint 3)**:
+1. Audio cue system — Real-time brake point warnings, lockup detection alerts, flag calls, fuel/pit window notifications
+2. LLM analysis service — Build DeltaReport from driver vs reference lap, send to claude-opus-4-6 for structured coaching feedback
+3. Reference lap management — Upload/download reference laps via API, replay ingestion mode
+
+---
+
 ## Planning References
 
 - **SPEC.md** — Full feature specification

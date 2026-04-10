@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from poller.shared_memory import SharedMemoryReader
 from poller.structs import ACCStatus, SPageFileStatic
+from recorder.summarizer import summarize_lap
 from store.database import init_db, insert_frame, mark_lap_summary
 
 __all__ = ["RecorderThread"]
@@ -24,6 +25,20 @@ def _default_db_path() -> Path:
 def _wstring_to_str(value: Any) -> str:
     text = str(value)
     return text.split("\x00", 1)[0].strip()
+
+
+def _json_compatible(value: Any) -> Any:
+    if hasattr(value, "model_dump") and callable(value.model_dump):
+        return {key: _json_compatible(item) for key, item in value.model_dump().items()}
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, list):
+        return [_json_compatible(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_compatible(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _json_compatible(item) for key, item in value.items()}
+    return value
 
 
 class RecorderThread(threading.Thread):
@@ -57,20 +72,32 @@ class RecorderThread(threading.Thread):
         self._latest_status: int | None = None
         self._latest_penalty: int | None = None
         self._latest_session_time_left: float | None = None
+        self._latest_current_sector_index: int | None = None
+        self._latest_last_sector_time: int | None = None
+        self._latest_track_grip_status: int | None = None
+        self._latest_rain_intensity: int | None = None
         self._circuit: str = ""
         self._car_model: str = ""
+        self._sector_count: int = 3
+        self._recording_enabled: bool = False
         self._current_lap_frames: list[dict[str, object]] = []
 
     def stop(self) -> None:
         self._stop_event.set()
+
+    def start_recording(self) -> None:
+        self._recording_enabled = True
+
+    def stop_recording(self) -> None:
+        self._recording_enabled = False
 
     def run(self) -> None:
         conn = sqlite3.connect(self._db_path)
         try:
             while not self._stop_event.is_set():
                 did_work = False
-                did_work = self._drain_graphics_queue(conn) or did_work
                 did_work = self._drain_physics_queue(conn) or did_work
+                did_work = self._drain_graphics_queue(conn) or did_work
                 if not did_work:
                     self._stop_event.wait(self._idle_sleep_s)
 
@@ -113,8 +140,13 @@ class RecorderThread(threading.Thread):
         self._latest_status = status
         self._latest_penalty = self._coerce_int(frame.get("penalty"))
         self._latest_session_time_left = self._coerce_float(frame.get("session_time_left"))
+        self._latest_current_sector_index = self._coerce_int(frame.get("current_sector_index"))
+        self._latest_last_sector_time = self._coerce_int(frame.get("last_sector_time"))
+        self._latest_track_grip_status = self._coerce_int(frame.get("track_grip_status"))
+        self._latest_rain_intensity = self._coerce_int(frame.get("rain_intensity"))
 
-        is_live = status == ACCStatus.ACC_LIVE
+        # Treat ACC_LIVE and ACC_PAUSE as live - don't finalize laps on pause
+        is_live = status in (ACCStatus.ACC_LIVE, ACCStatus.ACC_PAUSE)
         if not is_live:
             self._session_is_live = False
             self._session_needs_reset = True
@@ -138,12 +170,17 @@ class RecorderThread(threading.Thread):
         self._session_is_live = True
 
     def _handle_physics_frame(self, conn: sqlite3.Connection, frame: dict[str, object]) -> None:
-        if self._latest_status != ACCStatus.ACC_LIVE:
+        # Accept physics frames during LIVE and PAUSED states
+        if self._latest_status not in (ACCStatus.ACC_LIVE, ACCStatus.ACC_PAUSE):
             return
 
         if self.current_session_id is None or self.current_lap is None or self.session_start_time is None:
             baseline_completed_laps = self.last_completed_laps if self.last_completed_laps is not None else 0
             self._begin_session(baseline_completed_laps)
+
+        # Don't record frames if recording is disabled
+        if not self._recording_enabled:
+            return
 
         timestamp_ms = self._elapsed_ms()
         row = self._build_frame_payload(frame, timestamp_ms)
@@ -173,10 +210,12 @@ class RecorderThread(threading.Thread):
         if static is None:
             self._circuit = ""
             self._car_model = ""
+            self._sector_count = 3
             return
 
         self._circuit = _wstring_to_str(getattr(static, "track", ""))
         self._car_model = _wstring_to_str(getattr(static, "carModel", ""))
+        self._sector_count = self._coerce_sector_count(getattr(static, "sectorCount", None))
 
     def _build_frame_payload(self, frame: dict[str, object], timestamp_ms: int) -> dict[str, object]:
         payload = dict(frame)
@@ -187,6 +226,11 @@ class RecorderThread(threading.Thread):
         payload["completed_laps"] = self.last_completed_laps
         payload["penalty"] = self._latest_penalty
         payload["session_time_left"] = self._latest_session_time_left
+        payload["current_sector_index"] = self._latest_current_sector_index
+        payload["last_sector_time"] = self._latest_last_sector_time
+        payload["track_grip_status"] = self._latest_track_grip_status
+        payload["rain_intensity"] = self._latest_rain_intensity
+        payload["sector_count"] = self._sector_count
         return payload
 
     def _finalize_current_lap(self, conn: sqlite3.Connection, reason: str) -> None:
@@ -197,10 +241,21 @@ class RecorderThread(threading.Thread):
         frames = self._current_lap_frames
         if not frames:
             return
+        if not self._recording_enabled:
+            self._current_lap_frames = []
+            return
 
         lap_time_ms = self._lap_duration_ms(frames)
         is_valid = not any(self._frame_penalized(frame) for frame in frames)
-        summary_json = self._placeholder_summary_json(reason, frames, lap_time_ms, is_valid)
+        summary = summarize_lap(
+            frames,
+            self.current_session_id,
+            self.current_lap,
+            self._circuit or "",
+            self._car_model or "",
+            self._sector_count,
+        )
+        summary_json = json.dumps(_json_compatible(summary), ensure_ascii=False, separators=(",", ":"))
         mark_lap_summary(
             conn,
             session_id=self.current_session_id,
@@ -212,30 +267,6 @@ class RecorderThread(threading.Thread):
             summary_json=summary_json,
         )
         self._current_lap_frames = []
-
-    def _placeholder_summary_json(
-        self,
-        reason: str,
-        frames: list[dict[str, object]],
-        lap_time_ms: int,
-        is_valid: bool,
-    ) -> str:
-        payload = {
-            "kind": "lap_recorder_placeholder",
-            "reason": reason,
-            "session_id": self.current_session_id,
-            "lap_number": self.current_lap,
-            "frame_count": len(frames),
-            "lap_time_ms": lap_time_ms,
-            "is_valid": is_valid,
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "recorded_at": self._session_started_at.isoformat() if self._session_started_at else None,
-            "circuit": self._circuit or None,
-            "car_model": self._car_model or None,
-            "first_packet_id": self._coerce_int(frames[0].get("packet_id")) if frames else None,
-            "last_packet_id": self._coerce_int(frames[-1].get("packet_id")) if frames else None,
-        }
-        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
     def _lap_duration_ms(self, frames: list[dict[str, object]]) -> int:
         first_timestamp = self._coerce_int(frames[0].get("timestamp_ms")) if frames else 0
@@ -274,6 +305,14 @@ class RecorderThread(threading.Thread):
             return float(value)
         except (TypeError, ValueError):
             return None
+
+    @staticmethod
+    def _coerce_sector_count(value: object) -> int:
+        try:
+            sector_count = int(value)
+        except (TypeError, ValueError):
+            return 3
+        return sector_count if sector_count > 0 else 3
 
 
 if __name__ == "__main__":

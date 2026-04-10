@@ -329,10 +329,12 @@ class UploaderThread(threading.Thread):
             "started_at": lap.recorded_at.isoformat(),
         }
         headers = self._headers()
+        url = f"{self._backend_url}/sessions"
+        logger.info("Creating session %s at %s", lap.session_id, url)
 
         try:
             response = httpx.post(
-                f"{self._backend_url}/sessions",
+                url,
                 json=payload,
                 headers=headers,
                 timeout=self._request_timeout_s,
@@ -388,6 +390,7 @@ class UploaderThread(threading.Thread):
             )
             return False
 
+        logger.info("Uploaded lap %s/%s", lap.session_id, lap.lap_number)
         return True
 
     def _headers(self) -> dict[str, str]:

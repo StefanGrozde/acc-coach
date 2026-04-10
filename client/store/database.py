@@ -192,6 +192,29 @@ def _first_present(fields: dict[str, Any], aliases: tuple[str, ...]) -> Any:
     return None
 
 
+def delete_lap(conn: Connection, lap_id: int) -> bool:
+    """Delete a lap and its associated frames by lap ID. Returns True if deleted."""
+    with conn:
+        cursor = conn.execute("SELECT session_id, lap_number FROM laps WHERE id = ?", (lap_id,)).fetchone()
+        if not cursor:
+            return False
+
+        session_id, lap_number = cursor
+        conn.execute("DELETE FROM frames WHERE session_id = ? AND lap_number = ?", (session_id, lap_number))
+        conn.execute("DELETE FROM laps WHERE id = ?", (lap_id,))
+        return True
+
+
+def delete_all_laps(conn: Connection) -> int:
+    """Delete all laps and frames. Returns the count of deleted laps."""
+    with conn:
+        cursor = conn.execute("SELECT COUNT(*) FROM laps")
+        lap_count = cursor.fetchone()[0]
+        conn.execute("DELETE FROM frames")
+        conn.execute("DELETE FROM laps")
+        return lap_count
+
+
 def _utc_now_iso() -> str:
     from datetime import datetime, timezone
 

@@ -22,7 +22,13 @@ def summarize_lap(
     lap_number: int,
     circuit: str,
     car_model: str,
+    sector_count: int | None = None,
 ) -> LapSummary:
+    if sector_count is not None:
+        for frame in frames:
+            if isinstance(frame, dict) and frame.get("sector_count") is None:
+                frame["sector_count"] = sector_count
+
     samples = [_normalize_frame(frame, index) for index, frame in enumerate(frames)]
     samples.sort(key=_sample_sort_key)
 
@@ -197,8 +203,11 @@ def _normalize_frame(frame: dict[str, Any], index: int) -> dict[str, Any]:
     payload["rain_intensity"] = _first_present(payload, ("rain_intensity", "rainIntensity"))
     payload["air_temp_c"] = _coerce_optional_float(_first_present(payload, ("air_temp_c", "airTemp")))
     payload["track_temp_c"] = _coerce_optional_float(_first_present(payload, ("track_temp_c", "roadTemp")))
+    payload["sector_count"] = _coerce_int(_first_present(payload, ("sector_count", "sectorCount")))
+    payload["current_sector_index"] = _coerce_int(_first_present(payload, ("currentSectorIndex", "current_sector_index")))
+    payload["last_sector_time"] = _coerce_int(_first_present(payload, ("lastSectorTime", "last_sector_time")))
     payload["tyre_temp"] = _normalize_wheel_values(
-        _first_present(payload, ("tyre_temp", "tyreTemp", "tyreCoreTemperature"))
+        _first_present(payload, ("tyre_temp", "tyreTemp", "tyreCoreTemperature", "tyre_core_temperature"))
     )
     payload["tyre_pressure"] = _normalize_wheel_values(
         _first_present(payload, ("tyre_pressure", "tyrePressure", "wheelsPressure", "mfdTyrePressure"))
@@ -325,6 +334,7 @@ def _stringify_snapshot_value(value: Any) -> str:
 
 
 def _derive_sector_times(samples: list[dict[str, Any]], lap_time_ms: int) -> list[int]:
+    sector_count = _resolve_sector_count(samples)
     sector_indices = [
         _coerce_int(_first_present(sample, ("currentSectorIndex", "current_sector_index", "sector_index")))
         for sample in samples
@@ -332,7 +342,7 @@ def _derive_sector_times(samples: list[dict[str, Any]], lap_time_ms: int) -> lis
     sector_indices = [index for index in sector_indices if index is not None and index >= 0]
 
     if sector_indices:
-        sector_count = max(sector_indices) + 1
+        sector_count = max(sector_count, max(sector_indices) + 1)
         boundaries: list[int] = []
         for sector_idx in range(sector_count):
             sector_samples = [
@@ -348,18 +358,17 @@ def _derive_sector_times(samples: list[dict[str, Any]], lap_time_ms: int) -> lis
             last_ts = max(int(sample["timestamp_ms"]) for sample in sector_samples)
             boundaries.append(max(0, last_ts - first_ts))
         if any(boundaries):
-            return _normalize_sector_times(boundaries, lap_time_ms)
+            return _normalize_sector_times(boundaries, lap_time_ms, sector_count)
 
     distances = [sample["distance_m"] for sample in samples if sample.get("distance_m") is not None and sample.get("timestamp_ms") is not None]
     timestamps = [int(sample["timestamp_ms"]) for sample in samples if sample.get("timestamp_ms") is not None]
     if not distances or not timestamps:
-        return _split_evenly(lap_time_ms, DEFAULT_SECTOR_COUNT)
+        return _split_evenly(lap_time_ms, sector_count)
 
     total_distance = max(distances)
     if total_distance <= 0:
-        return _split_evenly(lap_time_ms, DEFAULT_SECTOR_COUNT)
+        return _split_evenly(lap_time_ms, sector_count)
 
-    sector_count = DEFAULT_SECTOR_COUNT
     split_distances = [total_distance * i / sector_count for i in range(1, sector_count)]
     boundary_timestamps: list[int] = []
     for target_distance in split_distances:
@@ -371,7 +380,15 @@ def _derive_sector_times(samples: list[dict[str, Any]], lap_time_ms: int) -> lis
     for earlier, later in zip(boundary_timestamps, boundary_timestamps[1:]):
         boundaries.append(max(0, later - earlier))
     boundaries.append(max(0, last_ts - boundary_timestamps[-1]))
-    return _normalize_sector_times(boundaries, lap_time_ms)
+    return _normalize_sector_times(boundaries, lap_time_ms, sector_count)
+
+
+def _resolve_sector_count(samples: list[dict[str, Any]]) -> int:
+    for sample in samples:
+        sector_count = _coerce_int(_first_present(sample, ("sector_count", "sectorCount")))
+        if sector_count is not None and sector_count > 0:
+            return sector_count
+    return DEFAULT_SECTOR_COUNT
 
 
 def _interpolated_timestamp_at_distance(samples: list[dict[str, Any]], target_distance: float) -> int:
@@ -410,10 +427,10 @@ def _split_evenly(total_ms: int, count: int) -> list[int]:
     return result
 
 
-def _normalize_sector_times(times: list[int], lap_time_ms: int) -> list[int]:
+def _normalize_sector_times(times: list[int], lap_time_ms: int, fallback_count: int = DEFAULT_SECTOR_COUNT) -> list[int]:
     normalized = [max(0, int(value)) for value in times if value is not None]
     if not normalized:
-        return _split_evenly(lap_time_ms, DEFAULT_SECTOR_COUNT)
+        return _split_evenly(lap_time_ms, fallback_count)
     total = sum(normalized)
     if total == lap_time_ms or lap_time_ms <= 0:
         return normalized
