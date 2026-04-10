@@ -33,7 +33,7 @@ class InputsGraphWidget(QWidget):
         self._plot_widget = pg.PlotWidget()
         self._plot_item = self._plot_widget.getPlotItem()
         self._plot_item.showGrid(x=True, y=True, alpha=0.25)
-        self._plot_item.setLabel("bottom", "Distance", units="m")
+        self._plot_item.setLabel("bottom", "Time", units="s")
         self._plot_item.setLabel("left", "Input", units="0-1")
         self._plot_item.showAxis("right")
         self._legend = self._plot_item.addLegend(offset=(10, 10))
@@ -99,33 +99,33 @@ class InputsGraphWidget(QWidget):
             self._set_empty_state()
             return
 
-        distances: list[float] = []
+        timestamps: list[float] = []
         brake_values: list[float] = []
         throttle_values: list[float] = []
         steer_values: list[float] = []
         speed_values: list[float] = []
 
-        for distance, brake, throttle, steer_angle, speed in rows:
-            if distance is None:
+        for timestamp, brake, throttle, steer_angle, speed in rows:
+            if timestamp is None:
                 continue
-            distances.append(_coerce_float(distance))
+            timestamps.append(_coerce_float(timestamp) / 1000.0)
             brake_values.append(max(0.0, min(1.0, _coerce_float(brake))))
             throttle_values.append(max(0.0, min(1.0, _coerce_float(throttle))))
             steer_raw = max(-1.0, min(1.0, _coerce_float(steer_angle)))
             steer_values.append((steer_raw + 1.0) / 2.0)
             speed_values.append(max(0.0, _coerce_float(speed)))
 
-        if not distances:
+        if not timestamps:
             self._set_empty_state()
             return
 
-        self._brake_curve.setData(distances, brake_values)
-        self._throttle_curve.setData(distances, throttle_values)
-        self._steer_curve.setData(distances, steer_values)
+        self._brake_curve.setData(timestamps, brake_values)
+        self._throttle_curve.setData(timestamps, throttle_values)
+        self._steer_curve.setData(timestamps, steer_values)
         self._steer_curve.setVisible(self._steer_toggle.isChecked())
-        self._speed_curve.setData(distances, speed_values)
+        self._speed_curve.setData(timestamps, speed_values)
 
-        self._plot_item.setXRange(min(distances), max(distances), padding=0.02)
+        self._plot_item.setXRange(min(timestamps), max(timestamps), padding=0.02)
         self._plot_item.setYRange(0.0, 1.05)
 
         speed_min = min(speed_values)
@@ -140,7 +140,7 @@ class InputsGraphWidget(QWidget):
 
     def _load_rows(self, session_id: str, lap_number: int) -> list[tuple[Any, Any, Any, Any, Any]]:
         query = """
-            SELECT distance_m, brake, throttle, steer_angle, speed_kmh
+            SELECT timestamp_ms, brake, throttle, steer_angle, speed_kmh
             FROM frames
             WHERE session_id = ? AND lap_number = ?
             ORDER BY timestamp_ms ASC, id ASC
@@ -161,7 +161,7 @@ class InputsGraphWidget(QWidget):
         self._throttle_curve.setData([], [])
         self._steer_curve.setData([], [])
         self._speed_curve.setData([], [])
-        self._plot_item.setXRange(0.0, 1.0, padding=0.0)
+        self._plot_item.setXRange(0.0, 60.0, padding=0.0)
         self._plot_item.setYRange(0.0, 1.05)
         self._speed_view.setYRange(0.0, 1.0, padding=0.0)
         self._update_speed_view()
