@@ -178,6 +178,10 @@ class RecorderThread(threading.Thread):
             baseline_completed_laps = self.last_completed_laps if self.last_completed_laps is not None else 0
             self._begin_session(baseline_completed_laps)
 
+        # Don't record frames if recording is disabled
+        if not self._recording_enabled:
+            return
+
         timestamp_ms = self._elapsed_ms()
         row = self._build_frame_payload(frame, timestamp_ms)
         self._current_lap_frames.append(row)

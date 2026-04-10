@@ -423,8 +423,13 @@ class BackendDataViewer(QWidget):
         try:
             import json
             data = json.loads(value)
+            # Handle both list format (legacy) and LapSummary object format
             if isinstance(data, list):
                 return [int(x) for x in data]
+            if isinstance(data, dict):
+                sector_times = data.get("sector_times_ms")
+                if isinstance(sector_times, list):
+                    return [int(x) for x in sector_times]
         except (json.JSONDecodeError, TypeError, ValueError):
             pass
         return []
