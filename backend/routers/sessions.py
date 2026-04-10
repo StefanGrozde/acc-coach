@@ -72,6 +72,14 @@ async def create_session(
         raise
 
 
+@router.get("/sessions", response_model=list[SessionRead])
+async def list_sessions(db: AsyncSession = Depends(get_db)) -> list[dict[str, object | None]]:
+    rows = await db.scalars(
+        select(SessionModel).order_by(SessionModel.started_at.desc(), SessionModel.created_at.desc())
+    )
+    return [_serialize_session(session) for session in rows.all()]
+
+
 @router.get("/sessions/{session_id}", response_model=SessionRead)
 async def get_session(session_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, object | None]:
     session = await db.scalar(select(SessionModel).where(SessionModel.session_id == session_id))
