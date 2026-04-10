@@ -275,7 +275,7 @@ class BackendDataViewer(QWidget):
 
         query = """
             SELECT session_id, lap_number, lap_time_ms, is_valid,
-                   circuit, car_model, recorded_at, sector_times_ms
+                   circuit, car_model, recorded_at
             FROM laps
             ORDER BY recorded_at DESC, session_id DESC, lap_number DESC
         """
@@ -294,7 +294,7 @@ class BackendDataViewer(QWidget):
                         "circuit": row[4],
                         "car_model": row[5],
                         "recorded_at": row[6],
-                        "sector_times_ms": self._parse_sector_json(row[7]),
+                        "sector_times_ms": [],
                     })
                 return laps
             finally:
