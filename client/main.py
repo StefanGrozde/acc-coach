@@ -1,9 +1,12 @@
 """ACC Coaching Client -- Main Application."""
 import sys
-import threading
-import time
 from pathlib import Path
 from queue import Queue
+import threading
+import time
+
+# Add project root to Python path for shared package
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from PyQt6.QtWidgets import QApplication
 
