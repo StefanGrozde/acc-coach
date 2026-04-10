@@ -1,6 +1,0 @@
-[backend]
-url = "http://localhost:8000/api/v1"
-api_key = "your-secret-key-here"
-upload_enabled = true
-upload_after_n_laps = 3
-

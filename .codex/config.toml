@@ -1,0 +1,8 @@
+[shell_environment_policy]
+inherit = "core"
+
+[shell_environment_policy.set]
+ANTHROPIC_AUTH_TOKEN = "184b7ed72dcf47038af61df0d79d50ce.SoLuDDZiQyIJPi1H"
+ANTHROPIC_BASE_URL = "https://api.z.ai/api/anthropic"
+ANTHROPIC_DEFAULT_HAIKU_MODEL = "glm-5.1"
+API_TIMEOUT_MS = "3000000"

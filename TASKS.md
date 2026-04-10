@@ -1,775 +1,177 @@
 # TASKS.md
 
-## Sprint 1 — Infrastructure Foundation
-Branch: sprint-1-infrastructure
-Status: DONE (✓ Remote deployment verified 2026-04-10)
+## Completed Sprints
+
+### Sprint 1 — Infrastructure Foundation ✓
+Branch: `sprint-1-infrastructure` → Merged to `main`
+Status: DONE (2026-04-10)
+PR: https://github.com/StefanGrozde/acc-coach/pull/1
+
+**Summary**: Established core infrastructure for both backend API and client application, including Docker deployment, PostgreSQL database with migrations, FastAPI routers with authentication, shared Pydantic models, and a PyQt6 connection testing UI.
+
+**Tasks Completed**:
+- T1.1 — Shared models package (`shared/`) with all Pydantic v2 models from SPEC.md (WheelData, CornerSummary, LapSummary, SessionSummary, AnalysisRequest, CornerFeedback, AnalysisResult, CornerDelta, LapDeltaHeader, TailAggregate, DeltaReport)
+- T1.2 — Docker Compose setup with FastAPI/gunicorn backend and PostgreSQL 15, including `.env.example` configuration
+- T1.3 — Async SQLAlchemy database session, Alembic migrations, and initial schema (sessions, laps, analyses, reference_laps tables with indexes)
+- T1.4 — FastAPI application skeleton with API key authentication middleware, CORS, and structlog configuration
+- T1.5 — Full API routers (sessions, laps, analysis, reference-laps) with CRUD endpoints and `X-API-Key` auth; analysis POST returns 501 (Phase 3)
+- T1.6 — PyQt6 connection testing UI (`client/scaffold_ui/`) for backend connectivity verification
+
+**Key Files Created**:
+- `shared/models.py`, `shared/pyproject.toml`
+- `docker-compose.yml`, `backend/Dockerfile`, `backend/requirements.txt`
+- `backend/db/session.py`, `backend/models/orm.py`, `backend/db/migrations/versions/20260410_initial.py`
+- `backend/main.py`, `backend/auth.py`, `backend/routers/*.py`
+- `client/main.py`, `client/config.toml`, `client/scaffold_ui/connection_tester.py`
+
+**P1 Bugs Fixed (Post-Review)**:
+- LapSummary datetime serialization: Changed `payload.model_dump()` → `payload.model_dump(mode="json")` in `laps.py`
+- Session creation race condition: Replaced check-then-insert with atomic IntegrityError-based upsert pattern
+
+**Deployment**: Verified on remote Ubuntu server with PostgreSQL, Docker Compose, and all API endpoints functional.
 
 ---
 
-### T1.1 — Shared models package + project structure
-Status: DONE
-Depends on: none
+## Sprint 2 — Client Telemetry & Visualization
+Branch: `sprint-2-client-telemetry`
+Status: PENDING
 
-**Context**
-This is the first task in a greenfield project. The repository currently contains only `CLAUDE.md`, `SPEC.md`, and `plan/references/planner.md`. You are creating the `shared/` Python package that serves as the single source of truth for all data shapes used by both the client and backend.
+### T2.1 — ACC Shared Memory Reader
+Status: PENDING
+**Context:** ACC exposes three memory-mapped files: `acpmf_physics` (~60Hz), `acpmf_graphics` (~25Hz), `acpmf_static` (once). Uses `ctypes.Structure` + `mmap` via `win32api`. Read-only — never write. See SPEC.md 7.1–7.2.
+**Files:** CREATE `client/poller/structs.py`, CREATE `client/poller/shared_memory.py`
+**Steps:**
+1. Define `SPageFilePhysics`, `SPageFileGraphic`, `SPageFileStatic` as `ctypes.Structure` subclasses matching ACC SDK layout (fields: `speedKmh`, `brake`, `throttle`, `steerAngle`, `gear`, `rpms`, `wheelSlip`, `abs`, `tc`, `fuel`, `tyreTemp`, `tyrePressure`, `numberOfLaps`, `completedLaps`, `distanceTraveled`, `sessionTimeLeft`, `status`, `penalty`, `track`, `carModel`, etc.)
+2. Implement `SharedMemoryReader.read(name: str, struct_type) -> Structure | None` that calls `win32file.CreateFileMapping` / `mmap.mmap`, returns `None` if file not found (game not running)
+3. Add a simple smoke test: loop that reads all three structs and prints `speedKmh` + `status` every second
+**Acceptance:**
+- [ ] Structs parse without error when ACC is running
+- [ ] Returns `None` gracefully when ACC is not running (no crash)
 
-The package must be installable via `pip install -e ./shared` so both `client/` and `backend/` can import from it (e.g., `from shared.models import LapSummary`).
+### T2.2 — Poller Threads & Queue Plumbing
+Status: PENDING
+**Depends on:** T2.1
+**Context:** Two daemon threads push frames into `queue.Queue`. `PhysicsPollerThread` reads `acpmf_physics` at ~60Hz, `GraphicsPollerThread` reads `acpmf_graphics` at ~25Hz. Each frame is a dict with `packet_id` + relevant fields.
+**Files:** CREATE `client/poller/physics_poller.py`, CREATE `client/poller/graphics_poller.py`, MODIFY `client/poller/__init__.py`
+**Steps:**
+1. Create `PhysicsPollerThread(threading.Thread)` — takes a `queue.Queue`, loops reading `SPageFilePhysics`, pushes `{"packet_id": ..., "speed_kmh": ..., "brake": ..., "throttle": ..., "steer": ..., "gear": ..., "rpms": ..., "abs": ..., "tc": ..., "fuel": ..., "tyre_temp": ..., "tyre_pressure": ..., "wheel_slip": ..., "distance_m": ...}` to queue, sleeps 1/60s
+2. Create `GraphicsPollerThread(threading.Thread)` — pushes `{"packet_id": ..., "completed_laps": ..., "session_time_left": ..., "status": ..., "penalty": ...}` at 1/25s
+3. Both threads set `daemon=True`, catch all exceptions silently, and retry on `None` reads (game not running)
+**Acceptance:**
+- [ ] Both threads start and populate queues without errors
+- [ ] Queues receive frames when ACC is live, stay empty without crashing when ACC is absent
 
-All Pydantic models are defined in SPEC.md Section 5.1. You must implement all of them:
-- `WheelData`
-- `CornerSummary`
-- `LapSummary`
-- `SessionSummary`
-- `AnalysisRequest`
-- `CornerFeedback`
-- `AnalysisResult`
+### T2.3 — SQLite Frame Store & Schema
+Status: PENDING
+**Context:** Local SQLite database at `client/data/acc_coach.db`. Tables: `frames` (raw physics ticks), `laps` (aggregated LapSummary JSON), `reference_laps`. See SPEC.md 5.2 for exact DDL.
+**Files:** CREATE `client/store/database.py`
+**Steps:**
+1. Implement `init_db(db_path: Path)` — creates tables per SPEC.md 5.2 DDL (`frames`, `laps`, `reference_laps`) if not exist
+2. Implement `insert_frame(conn, session_id, lap_number, packet_id, timestamp_ms, fields: dict)` — inserts one row, `fields` stored as `raw_json`
+3. Implement `mark_lap_summary(conn, session_id, lap_number, lap_time_ms, is_valid, circuit, car_model, summary_json)` — upserts into `laps` table with `uploaded=0`
+**Acceptance:**
+- [ ] `init_db` creates all three tables with correct indexes
+- [ ] Frames and laps can be written/read round-trip
 
-You must also implement the DeltaReport models from SPEC.md Section 9.3.1:
-- `CornerDelta`
-- `LapDeltaHeader`
-- `TailAggregate`
-- `DeltaReport`
+### T2.4 — Lap Recorder Thread
+Status: PENDING
+**Depends on:** T2.2, T2.3
+**Context:** Consumes both physics and graphics queues. Detects new lap when `completedLaps` increments and `status == ACC_LIVE`. Writes frames during the lap, finalizes lap on boundary.
+**Files:** CREATE `client/recorder/lap_recorder.py`
+**Steps:**
+1. `RecorderThread` drains physics queue, buffers frames under current `(session_id, lap_number)`. Track `current_lap`, `last_completed_laps`, `session_start_time`
+2. On `completedLaps` increment: flush buffered frames to SQLite via `insert_frame`, finalize lap with `mark_lap_summary` (placeholder summary — T2.5 fills real data)
+3. Generate `session_id` as `uuid4().hex` on first frame; reset on new ACC session detection (`status` change from non-live to live)
+**Acceptance:**
+- [ ] Frame data written to SQLite during a lap
+- [ ] Lap boundary detected correctly (new row in `laps` table)
+- [ ] Handles mid-session start (partial first lap recorded)
 
-Use Pydantic v2 (`from pydantic import BaseModel, Field`). All models use standard Python types. Python version is 3.11+.
+### T2.5 — Lap Summarizer
+Status: PENDING
+**Depends on:** T2.3
+**Context:** Aggregates raw frame rows into a `LapSummary` (from `shared/models.py`). Corner segmentation uses speed minima with smoothing. See SPEC.md 7.3.
+**Files:** CREATE `client/recorder/summarizer.py`
+**Steps:**
+1. Implement `summarize_lap(frames: list[dict], session_id: str, lap_number: int, circuit: str, car_model: str) -> LapSummary` — extracts `sector_times_ms`, `fuel_start/end/used`, `tyre_core_temp_avg`, `tyre_pressure_avg`, `tyre_wear_delta`, `abs_total_frames`, `tc_total_frames`, `lockup_events`, environment fields from frames
+2. Implement `segment_corners(frames: list[dict], threshold_kmh=180, min_sep_m=50) -> list[CornerSummary]` — smooth speed trace (rolling mean window=5), find local minima below threshold, merge closer than `min_sep_m`, compute per-corner `entry/min/exit speed`, `brake_point_distance`, `brake_duration`, `max_brake`, `throttle_application_distance`, `lockup_detected`
+3. Validate output against `LapSummary` schema — `LapSummary.model_validate(result)` must pass
+**Acceptance:**
+- [ ] `summarize_lap` returns a valid `LapSummary` from a list of frame dicts
+- [ ] Corner count is reasonable for known tracks (e.g., Spa ~19 corners)
 
-You also need to create:
-- `pyproject.toml` at the project root with basic project metadata and `ruff` config
-- `shared/pyproject.toml` for the shared package installability
-- `shared/__init__.py` that re-exports models
+### T2.6 — Backend Uploader Thread
+Status: PENDING
+**Depends on:** T2.4, T2.5
+**Context:** Watches SQLite `laps` table for `uploaded=0`. POSTs each pending `summary_json` to `POST /laps`. Reads config from `client/config.toml` (`[backend]` section). Backend already has `POST /laps` and `POST /sessions` endpoints.
+**Files:** CREATE `client/sync/uploader.py`, MODIFY `client/config.toml`
+**Steps:**
+1. `UploaderThread` polls SQLite every 5s for `uploaded=0` laps, deserializes `summary_json` as `LapSummary`, POSTs to `{backend_url}/laps` with `X-API-Key` header via `httpx.post(timeout=15.0)`
+2. On HTTP 200/201: set `uploaded=1`. On failure: log warning, keep `uploaded=0`, retry next cycle
+3. Ensure `POST /sessions` is called once when a new `session_id` appears (creates parent session row on backend)
+**Acceptance:**
+- [ ] Pending laps uploaded to backend and marked `uploaded=1`
+- [ ] Failed uploads retried without data loss
+- [ ] Parent session created on backend before first lap upload
 
-**Files**
-- CREATE `shared/__init__.py`
-- CREATE `shared/models.py`
-- CREATE `shared/pyproject.toml`
-- CREATE `pyproject.toml`
+### T2.7 — Brake & Throttle Graph Widget
+Status: PENDING
+**Depends on:** T2.3
+**Context:** PyQt6 widget using `pyqtgraph` to plot `brake` (0–1) and `throttle` (0–1) vs distance (m) for a selected lap. Frames come from SQLite `frames` table filtered by `(session_id, lap_number)`.
+**Files:** CREATE `client/overlay/widgets/inputs_graph.py`
+**Steps:**
+1. Create `InputsGraphWidget(QWidget)` with a `pyqtgraph.PlotWidget`. Plot two curves: brake (red, fill to zero) and throttle (green, fill to zero) vs `distance_m`
+2. Add `set_lap(session_id: str, lap_number: int)` method that queries SQLite `frames` for `brake`, `throttle`, `distance_m`, updates plot
+3. Add a speed curve (blue, secondary y-axis) for context
+**Acceptance:**
+- [ ] Graph renders brake/throttle traces for a given lap
+- [ ] Axes labeled (distance m, input 0–1, speed km/h)
 
-**Implementation**
+### T2.8 — Steering Angle Overlay on Inputs Graph
+Status: PENDING
+**Depends on:** T2.7
+**Context:** Extends `InputsGraphWidget` to overlay `steer` (-1 to +1) on the same distance axis. Left/right steering shown as positive/negative.
+**Files:** MODIFY `client/overlay/widgets/inputs_graph.py`
+**Steps:**
+1. Add a third curve for `steer` (yellow) scaled to fit the 0–1 range (map -1..+1 to 0..0.5 range or use a dedicated y-axis)
+2. Add a checkbox toggle to show/hide the steering trace
+3. Add legend with color indicators for all traces
+**Acceptance:**
+- [ ] Steering angle visible alongside brake/throttle
+- [ ] Toggle works, legend present
 
-1. Create `pyproject.toml` at the project root:
-```toml
-[project]
-name = "acc-coaching"
-version = "0.1.0"
-requires-python = ">=3.11"
+### T2.9 — Draggable Floating Graph Window
+Status: PENDING
+**Depends on:** T2.7
+**Context:** The graph widget must be a frameless, semi-transparent window that the user can drag anywhere on a multi-monitor setup. `Qt.WindowType.FramelessWindowHint` + custom drag handling.
+**Files:** CREATE `client/overlay/widgets/floating_graph_window.py`
+**Steps:**
+1. Create `FloatingGraphWindow(QWidget)` — frameless (`Qt.WindowType.FramelessWindowHint`), always-on-top (`Qt.WindowType.WindowStaysOnTopHint`), semi-transparent background (`setWindowOpacity(0.85)`)
+2. Implement drag-to-move via `mousePressEvent` / `mouseMoveEvent` tracking offset; also respond to `QKeyEvent` for position snapping
+3. Embed `InputsGraphWidget` inside. Add a collapse/expand button and a close button in a tiny title bar
+**Acceptance:**
+- [ ] Window is frameless and draggable across monitors
+- [ ] Opacity configurable, collapse/expand works
 
-[tool.ruff]
-target-version = "py311"
-line-length = 120
-
-[tool.ruff.lint]
-select = ["E", "F", "I", "W"]
-
-[tool.mypy]
-python_version = "3.11"
-strict = true
-```
-
-2. Create `shared/pyproject.toml`:
-```toml
-[project]
-name = "acc-shared"
-version = "0.1.0"
-requires-python = ">=3.11"
-dependencies = ["pydantic>=2.0"]
-
-[build-system]
-requires = ["setuptools>=68.0"]
-build-backend = "setuptools.backends._legacy:_Backend"
-```
-
-3. Create `shared/__init__.py`:
-```python
-from shared.models import (
-    AnalysisRequest,
-    AnalysisResult,
-    CornerDelta,
-    CornerFeedback,
-    CornerSummary,
-    DeltaReport,
-    LapDeltaHeader,
-    LapSummary,
-    SessionSummary,
-    TailAggregate,
-    WheelData,
-)
-
-__all__ = [
-    "WheelData",
-    "CornerSummary",
-    "LapSummary",
-    "SessionSummary",
-    "AnalysisRequest",
-    "CornerFeedback",
-    "AnalysisResult",
-    "CornerDelta",
-    "LapDeltaHeader",
-    "TailAggregate",
-    "DeltaReport",
-]
-```
-
-4. Create `shared/models.py` containing all Pydantic v2 models exactly as specified in SPEC.md Sections 5.1 and 9.3.1. Key details:
-   - `WheelData`: fields `fl`, `fr`, `rl`, `rr` (all `float`)
-   - `CornerSummary`: all fields from SPEC.md Section 5.1, `corner_name` is `Optional[str]`
-   - `LapSummary`: all fields from SPEC.md Section 5.1 including `corners: list[CornerSummary]`, `tyre_core_temp_avg: WheelData`, etc.
-   - `SessionSummary`: fields `session_id`, `session_type`, `circuit`, `car_model`, `started_at`, `laps: list[LapSummary]`
-   - `AnalysisRequest`: `session_id`, optional `reference_lap_id`, optional `focus_areas`
-   - `CornerFeedback`: `corner_index`, optional `corner_name`, optional `time_loss_estimate_ms`, `issues`, `recommendations`
-   - `AnalysisResult`: all fields from SPEC.md Section 5.1
-   - `CornerDelta`: all abbreviated fields from SPEC.md Section 9.3.1 with the `tags` literal list
-   - `LapDeltaHeader`: all fields from SPEC.md Section 9.3.1
-   - `TailAggregate`: `n_corners`, `t_d_sum`, `dominant_tags`
-   - `DeltaReport`: `v`, `hdr`, `top`, `tail`, `recent_laps_ms`
-   - All models use `from datetime import datetime`, `from typing import Optional`, `from enum import IntEnum` as needed
-   - All models use Pydantic v2 style (no `class Config`, use `model_config` if needed)
-
-**Acceptance Criteria**
-- [ ] `pip install -e ./shared` succeeds without errors
-- [ ] `python -c "from shared.models import LapSummary, DeltaReport"` succeeds
-- [ ] All model fields match SPEC.md Sections 5.1 and 9.3.1 exactly
-- [ ] `ruff check shared/` passes with zero errors
-
----
-
-### T1.2 — Docker Compose + Dockerfile + .env.example
-Status: DONE
-Depends on: T1.1
-
-**Context**
-Create the Docker infrastructure for the backend API and PostgreSQL database. The backend is a FastAPI application served by gunicorn with uvicorn workers. PostgreSQL 15 is used for data storage.
-
-The `shared/` package (created in T1.1) must be installed inside the Docker container so the backend can import from it. The Dockerfile copies `shared/` into the container and runs `pip install -e ./shared`.
-
-The Docker Compose file defines two services: `api` and `db`. The API service waits for the database to be healthy before starting. Environment variables are loaded from a `.env` file.
-
-The backend directory structure you are creating:
-```
-backend/
-  main.py          (placeholder -- just enough to import, will be filled in T1.4)
-  requirements.txt
-  Dockerfile
-```
-
-**Files**
-- CREATE `docker-compose.yml`
-- CREATE `backend/Dockerfile`
-- CREATE `backend/requirements.txt`
-- CREATE `backend/main.py` (minimal placeholder)
-- CREATE `.env.example`
-
-**Implementation**
-
-1. Create `docker-compose.yml` at project root:
-```yaml
-version: "3.9"
-
-services:
-  api:
-    build:
-      context: .
-      dockerfile: backend/Dockerfile
-    restart: unless-stopped
-    ports:
-      - "8000:8000"
-    environment:
-      - DATABASE_URL=postgresql+asyncpg://acc:${DB_PASSWORD}@db:5432/acc_coaching
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - API_KEY=${API_KEY}
-    depends_on:
-      db:
-        condition: service_healthy
-    volumes:
-      - ./backend/prompts:/app/prompts:ro
-
-  db:
-    image: postgres:15-alpine
-    restart: unless-stopped
-    environment:
-      - POSTGRES_USER=acc
-      - POSTGRES_PASSWORD=${DB_PASSWORD}
-      - POSTGRES_DB=acc_coaching
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U acc -d acc_coaching"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-volumes:
-  postgres_data:
-```
-
-2. Create `backend/Dockerfile`:
-```dockerfile
-FROM python:3.11-slim
-
-WORKDIR /app
-
-# Install shared package first (for caching)
-COPY shared/ ./shared/
-RUN pip install --no-cache-dir -e ./shared
-
-# Install backend dependencies
-COPY backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy backend code
-COPY backend/ .
-
-# Create prompts directory
-RUN mkdir -p /app/prompts
-
-ENV PYTHONUNBUFFERED=1
-
-CMD ["gunicorn", "main:app", \
-     "--worker-class", "uvicorn.workers.UvicornWorker", \
-     "--workers", "2", \
-     "--bind", "0.0.0.0:8000", \
-     "--access-logfile", "-"]
-```
-
-3. Create `backend/requirements.txt`:
-```
-fastapi>=0.104.0
-uvicorn[standard]>=0.24.0
-gunicorn>=21.2.0
-sqlalchemy[asyncio]>=2.0.0
-asyncpg>=0.29.0
-alembic>=1.12.0
-pydantic>=2.0
-pydantic-settings>=2.0
-python-dotenv>=1.0.0
-structlog>=23.0
-httpx>=0.25.0
-```
-
-4. Create `backend/main.py` as a minimal placeholder:
-```python
-"""ACC Coaching Backend API — Phase 1 placeholder."""
-from fastapi import FastAPI
-
-app = FastAPI(
-    title="ACC Coaching API",
-    version="0.1.0",
-    docs_url="/api/v1/docs",
-    openapi_url="/api/v1/openapi.json",
-)
-
-
-@app.get("/api/v1/health")
-async def health_check() -> dict[str, str]:
-    return {"status": "ok"}
-```
-
-5. Create `.env.example`:
-```env
-# Backend
-DATABASE_URL=postgresql+asyncpg://acc:changeme@db:5432/acc_coaching
-ANTHROPIC_API_KEY=sk-ant-...
-API_KEY=your-secret-key-here
-DB_PASSWORD=changeme
-
-# Client (config.toml, not .env)
-# BACKEND_URL = "https://your-server.com/api/v1"
-# API_KEY = "your-secret-key-here"
-```
-
-**Acceptance Criteria**
-- [ ] `docker compose build` succeeds (builds the API image)
-- [ ] `docker compose up -d` starts both `api` and `db` containers
-- [ ] `GET http://localhost:8000/api/v1/health` returns `{"status": "ok"}`
-- [ ] `docker compose down -v` cleans up containers and volumes
+### T2.10 — Backend Data Viewer UI
+Status: PENDING
+**Depends on:** T2.6 (backend has data to view)
+**Context:** PyQt6 tab widget that fetches sessions/laps from backend via `GET /sessions`, `GET /sessions/{id}/laps`. Displays a session list on the left, lap details on the right. Reuses config from `client/config.toml`.
+**Files:** CREATE `client/overlay/data_viewer.py`
+**Steps:**
+1. Left panel: `QListWidget` showing sessions (circuit, car, date). Fetch via `GET /sessions` (add a simple list endpoint to backend if missing: `GET /sessions` returns all sessions)
+2. Right panel: `QTableWidget` showing laps for selected session (lap number, time, valid, sectors). Fetch via `GET /sessions/{id}/laps`
+3. Double-click a lap to open it in the `InputsGraphWidget` (T2.7) — fetches frame data from local SQLite
+**Acceptance:**
+- [ ] Sessions listed with circuit/car/date
+- [ ] Laps load on session selection with times and validity
+- [ ] Double-clicking a lap opens the graph widget with that lap's data
 
 ---
 
-### T1.3 — Database session, Alembic setup, initial migration
-Status: DONE
-NOTE: ORM models missing ForeignKey() definitions; migration is correct. Fix before Phase 2.
-Depends on: T1.2
-
-**Context**
-Set up async SQLAlchemy database access and Alembic migrations for the PostgreSQL backend. The initial migration must create all four tables specified in SPEC.md Section 5.3:
-- `sessions` (columns: id UUID PK, session_id TEXT UNIQUE, session_type TEXT, circuit TEXT, car_model TEXT, started_at TIMESTAMPTZ, created_at TIMESTAMPTZ)
-- `laps` (columns: id UUID PK, session_id TEXT FK->sessions, lap_number INT, lap_time_ms INT, is_valid BOOLEAN, circuit TEXT, car_model TEXT, recorded_at TIMESTAMPTZ, summary JSONB, created_at TIMESTAMPTZ; UNIQUE constraint on session_id+lap_number)
-- `analyses` (columns: id UUID PK, session_id TEXT FK->sessions, generated_at TIMESTAMPTZ, result JSONB, model_used TEXT, prompt_tokens INT, completion_tokens INT)
-- `reference_laps` (columns: id UUID PK, circuit TEXT, car_model TEXT, lap_time_ms INT, source TEXT, summary JSONB, added_at TIMESTAMPTZ)
-- Indexes: `idx_laps_session` on laps(session_id), `idx_laps_circuit_car` on laps(circuit, car_model), `idx_analyses_session` on analyses(session_id)
-
-The database session module provides an async `get_db()` dependency for FastAPI. The engine reads `DATABASE_URL` from the environment.
-
-Alembic must be configured for async operation (using `asyncpg` driver). The `alembic.ini` lives in `backend/`. The `env.py` must import the ORM models' `Base.metadata` for autogenerate support.
-
-**Files**
-- CREATE `backend/db/__init__.py`
-- CREATE `backend/db/session.py`
-- CREATE `backend/models/__init__.py`
-- CREATE `backend/models/orm.py`
-- CREATE `backend/alembic.ini`
-- CREATE `backend/db/migrations/env.py`
-- CREATE `backend/db/migrations/script.py.mako`
-- CREATE `backend/db/migrations/versions/__init__.py` (empty)
-- Run `alembic revision --autogenerate -m "initial"` to create the migration
-
-**Implementation**
-
-1. Create `backend/db/__init__.py` (empty).
-
-2. Create `backend/db/session.py`:
-```python
-"""Async SQLAlchemy engine and session factory."""
-import os
-from collections.abc import AsyncGenerator
-
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL",
-    "postgresql+asyncpg://acc:changeme@localhost:5432/acc_coaching",
-)
-
-engine = create_async_engine(DATABASE_URL, echo=False)
-async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
-
-async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    """FastAPI dependency that yields an async database session."""
-    async with async_session() as session:
-        yield session
-```
-
-3. Create `backend/models/__init__.py` (empty).
-
-4. Create `backend/models/orm.py` with SQLAlchemy ORM models matching SPEC.md Section 5.3. Use `UUID` columns with `server_default=func.gen_random_uuid()`. Import `Guid` server default from SQLAlchemy. Key details:
-   - Import `from sqlalchemy import Column, String, Integer, Boolean, DateTime, Text, Index, UniqueConstraint`
-   - Import `from sqlalchemy.dialects.postgresql import UUID, JSONB`
-   - Import `from sqlalchemy.sql import func`
-   - Import `from sqlalchemy.orm import DeclarativeBase`
-   - Define `class Base(DeclarativeBase)` with no custom config
-   - Define `Session`, `Lap`, `Analysis`, `ReferenceLap` classes
-   - `Lap.summary` is `Column(JSONB, nullable=False)`
-   - `Analysis.result` is `Column(JSONB, nullable=False)`
-   - `ReferenceLap.summary` is `Column(JSONB, nullable=False)`
-   - Add indexes and unique constraints as specified
-
-5. Create `backend/alembic.ini`:
-```ini
-[alembic]
-script_location = db/migrations
-prepend_sys_path = .
-sqlalchemy.url = postgresql+asyncpg://acc:changeme@localhost:5432/acc_coaching
-
-[loggers]
-keys = root,sqlalchemy,alembic
-
-[handlers]
-keys = console
-
-[formatters]
-keys = generic
-
-[logger_root]
-level = WARN
-handlers = console
-
-[logger_sqlalchemy]
-level = WARN
-handlers =
-qualname = sqlalchemy.engine
-
-[logger_alembic]
-level = INFO
-handlers =
-qualname = alembic
-
-[handler_console]
-class = StreamHandler
-args = (sys.stderr,)
-level = NOTSET
-formatter = generic
-
-[formatter_generic]
-format = %(levelname)-5.5s [%(name)s] %(message)s
-datefmt = %H:%M:%S
-```
-
-6. Create `backend/db/migrations/env.py` configured for async Alembic:
-   - Import `asyncio` and `from logging.config import fileConfig`
-   - Import `from sqlalchemy.ext.asyncio import create_async_engine`
-   - Import `from models.orm import Base` (the ORM declarative base)
-   - Import `from alembic import context`
-   - Set `target_metadata = Base.metadata`
-   - Implement `run_migrations_online()` using async engine with `connect()` and `connection.run_sync(do_run_migrations)`
-   - Read `DATABASE_URL` from environment (override `sqlalchemy.url` from ini)
-
-7. Create `backend/db/migrations/script.py.mako` (standard Alembic Mako template).
-
-8. Create `backend/db/migrations/versions/__init__.py` (empty file).
-
-9. Run from within the backend directory (or via docker):
-   ```
-   cd backend && alembic revision --autogenerate -m "initial"
-   ```
-   This creates the initial migration file in `backend/db/migrations/versions/`.
-
-**Acceptance Criteria**
-- [ ] `alembic revision --autogenerate -m "test"` detects all four tables without unexpected drops
-- [ ] `alembic upgrade head` runs without errors against a running PostgreSQL instance
-- [ ] `\dt` in PostgreSQL shows `sessions`, `laps`, `analyses`, `reference_laps` tables
-- [ ] All indexes from SPEC.md Section 5.3 exist
-
----
-
-### T1.4 — Backend API skeleton with health endpoint + API key auth
-Status: DONE
-Depends on: T1.3
-
-**Context**
-Replace the placeholder `backend/main.py` with a full FastAPI application skeleton that includes:
-- App factory or module-level app with routers
-- API key authentication middleware (read `API_KEY` from env, validate `X-API-Key` header on all routes except `/health`)
-- CORS middleware (allow all origins for Phase 1 -- the scaffolding UI needs it)
-- Structlog configuration
-- Mounting routers under `/api/v1` prefix
-- The `db/session.py` `get_db()` dependency integrated
-
-For this task, create a minimal `health` router and the auth dependency. The full routers (sessions, laps, analysis, reference-laps) come in T1.5.
-
-The auth mechanism is simple: read `X-API-Key` header from the request, compare it to `API_KEY` environment variable. Return HTTP 401 if missing or mismatched. Use FastAPI's `Security` with `APIKeyHeader`.
-
-**Files**
-- MODIFY `backend/main.py`
-- CREATE `backend/auth.py`
-- CREATE `backend/routers/__init__.py`
-- CREATE `backend/routers/health.py`
-
-**Implementation**
-
-1. Create `backend/auth.py`:
-```python
-"""API key authentication for FastAPI."""
-import os
-import secrets
-
-from fastapi import HTTPException, Security, status
-from fastapi.security import APIKeyHeader
-
-API_KEY = os.environ.get("API_KEY", "")
-api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
-
-
-async def verify_api_key(api_key: str | None = Security(api_key_header)) -> str:
-    """Verify the X-API-Key header. Raises 401 if invalid."""
-    if not API_KEY:
-        # If no API_KEY configured, skip auth (dev mode)
-        return "dev"
-    if api_key is None or not secrets.compare_digest(api_key, API_KEY):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or missing API key",
-        )
-    return api_key
-```
-
-2. Create `backend/routers/__init__.py` (empty).
-
-3. Create `backend/routers/health.py`:
-```python
-"""Health check router."""
-from fastapi import APIRouter
-
-router = APIRouter(tags=["health"])
-
-
-@router.get("/health")
-async def health_check() -> dict[str, str]:
-    return {"status": "ok"}
-```
-
-4. Rewrite `backend/main.py`:
-```python
-"""ACC Coaching Backend API."""
-import structlog
-
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-
-from routers.health import router as health_router
-
-structlog.configure(
-    processors=[
-        structlog.contextvars.merge_contextvars,
-        structlog.processors.add_log_level,
-        structlog.processors.JSONRenderer(),
-    ]
-)
-
-logger = structlog.get_logger()
-
-app = FastAPI(
-    title="ACC Coaching API",
-    version="0.1.0",
-    docs_url="/api/v1/docs",
-    openapi_url="/api/v1/openapi.json",
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Health check does NOT require auth
-app.include_router(health_router, prefix="/api/v1")
-
-# Future routers (T1.5) will be added here with auth dependency:
-# app.include_router(sessions_router, prefix="/api/v1", dependencies=[Depends(verify_api_key)])
-
-
-@app.on_event("startup")
-async def startup() -> None:
-    logger.info("acc_coaching_api_starting")
-```
-
-**Acceptance Criteria**
-- [ ] `GET /api/v1/health` returns 200 without any auth header
-- [ ] `GET /api/v1/docs` returns the OpenAPI Swagger UI
-- [ ] `POST /api/v1/sessions` without `X-API-Key` returns 401 (once T1.5 routers are added, but the auth module must be importable now)
-- [ ] CORS headers are present in responses (`Access-Control-Allow-Origin: *`)
-
----
-
-### T1.5 — Full API routers (sessions, laps, analysis, reference-laps)
-Status: DONE
-Depends on: T1.4
-
-**Context**
-Implement all API routers specified in SPEC.md Section 6. Each router uses the `verify_api_key` dependency from `backend/auth.py` (except health). All database operations use the async `get_db()` session from `backend/db/session.py`.
-
-The routers are:
-1. **sessions** -- `POST /sessions`, `GET /sessions/{session_id}`
-2. **laps** -- `POST /laps`, `GET /sessions/{session_id}/laps`
-3. **analysis** -- `POST /analysis/session/{session_id}`, `GET /analysis/session/{session_id}/latest`
-4. **reference-laps** -- `GET /reference-laps`, `POST /reference-laps`
-
-For Phase 1, the analysis POST endpoint returns HTTP 501 "Not Implemented -- LLM analysis coming in Phase 3". The analysis GET endpoint returns the latest analysis from DB if one exists (it won't yet, so it returns 404).
-
-The `POST /laps` endpoint accepts a `LapSummary` JSON body (from `shared.models`), stores it in the `laps` table with the `summary` column as JSONB, and auto-creates the parent `session` row if it doesn't exist (upsert).
-
-The `POST /sessions` endpoint creates a session row. If the session already exists (by `session_id`), return the existing one with HTTP 200 instead of creating a duplicate.
-
-Create placeholder files for services:
-- `backend/services/__init__.py` (empty)
-- `backend/services/llm.py` (empty -- just a docstring saying "Phase 3")
-- `backend/services/diff.py` (empty -- just a docstring saying "Phase 3")
-
-Also create:
-- `backend/prompts/` directory (empty, mounted as volume in Docker)
-- `backend/prompts/.gitkeep`
-
-**Files**
-- CREATE `backend/routers/sessions.py`
-- CREATE `backend/routers/laps.py`
-- CREATE `backend/routers/analysis.py`
-- CREATE `backend/routers/reference_laps.py`
-- CREATE `backend/services/__init__.py`
-- CREATE `backend/services/llm.py`
-- CREATE `backend/services/diff.py`
-- CREATE `backend/prompts/.gitkeep`
-- MODIFY `backend/main.py` (register new routers)
-
-**Implementation**
-
-1. Create `backend/services/__init__.py` (empty).
-
-2. Create `backend/services/llm.py`:
-```python
-"""LLM analysis service -- Phase 3 implementation."""
-```
-
-3. Create `backend/services/diff.py`:
-```python
-"""Delta report diff engine -- Phase 3 implementation."""
-```
-
-4. Create `backend/prompts/.gitkeep` (empty file).
-
-5. Create `backend/routers/sessions.py`:
-   - `POST /sessions` -- accepts `{ session_id, session_type, circuit, car_model, started_at }`, checks if session exists by `session_id`, returns existing (200) or creates new (201)
-   - `GET /sessions/{session_id}` -- returns session or 404
-   - Use `from models.orm import Session as SessionModel`
-   - Use `from db.session import get_db`
-   - Use `from auth import verify_api_key` as a dependency
-   - Response models: simple dict/Pydantic response models
-
-6. Create `backend/routers/laps.py`:
-   - `POST /laps` -- accepts a `LapSummary` JSON body from `shared.models`, creates a `Lap` ORM object with `summary` as JSONB, also auto-creates session if not exists (upsert session row). Returns `{ id, session_id, lap_number }` with 201
-   - `GET /sessions/{session_id}/laps` -- returns list of lap summaries from DB
-   - Import `from shared.models import LapSummary`
-
-7. Create `backend/routers/analysis.py`:
-   - `POST /analysis/session/{session_id}` -- accepts optional `AnalysisRequest` body, returns HTTP 501 with `{"detail": "Not Implemented -- LLM analysis coming in Phase 3"}`
-   - `GET /analysis/session/{session_id}/latest` -- queries `analyses` table for latest by `session_id`, returns result or 404
-
-8. Create `backend/routers/reference_laps.py`:
-   - `GET /reference-laps` -- accepts optional query params `circuit` and `car_model`, returns matching reference laps from DB
-   - `POST /reference-laps` -- accepts `{ circuit, car_model, lap_time_ms, source, summary }`, creates row, returns 201
-
-9. Modify `backend/main.py` to register all routers:
-   ```python
-   from fastapi import Depends
-   from auth import verify_api_key
-   from routers.sessions import router as sessions_router
-   from routers.laps import router as laps_router
-   from routers.analysis import router as analysis_router
-   from routers.reference_laps import router as reference_laps_router
-
-   # ... after health router ...
-
-   api_key_dep = Depends(verify_api_key)
-   app.include_router(sessions_router, prefix="/api/v1", dependencies=[api_key_dep])
-   app.include_router(laps_router, prefix="/api/v1", dependencies=[api_key_dep])
-   app.include_router(analysis_router, prefix="/api/v1", dependencies=[api_key_dep])
-   app.include_router(reference_laps_router, prefix="/api/v1", dependencies=[api_key_dep])
-   ```
-
-**Acceptance Criteria**
-- [ ] `POST /api/v1/sessions` with valid `X-API-Key` and body `{"session_id": "test-uuid", "session_type": "PRACTICE", "circuit": "spa", "car_model": "Ferrari 296 GT3", "started_at": "2026-04-09T12:00:00Z"}` returns 201
-- [ ] `POST /api/v1/sessions` with same `session_id` returns 200 (idempotent)
-- [ ] `POST /api/v1/laps` with a valid LapSummary JSON body returns 201
-- [ ] `GET /api/v1/sessions/{session_id}/laps` returns the uploaded lap(s)
-- [ ] `POST /api/v1/analysis/session/{session_id}` returns 501
-- [ ] `GET /api/v1/analysis/session/{session_id}/latest` returns 404
-- [ ] `GET /api/v1/reference-laps` returns empty list `[]`
-- [ ] All endpoints return 401 without `X-API-Key` header (except `/health`)
-
----
-
-### T1.6 — Client scaffolding UI — PyQt6 connection tester
-Status: DONE
-Depends on: T1.1
-
-**Context**
-Create a minimal PyQt6 desktop application that lets a developer test connectivity to the remote backend. This is NOT the final overlay -- it is a throwaway scaffolding tool for Phase 1 verification.
-
-The UI has:
-- A text input for the backend base URL (default: `http://localhost:8000/api/v1`)
-- A text input for the API key
-- A "Test Connection" button that calls `GET /health` (no auth required)
-- A "Test Auth" button that calls `GET /sessions` with the API key
-- A status label showing the result
-
-The app reads default values from `client/config.toml` if it exists.
-
-Create the full directory structure for the client, but only populate what's needed:
-- `client/main.py` -- entry point for the scaffold UI
-- `client/config.toml` -- minimal backend config
-- `client/scaffold_ui/` -- the scaffolding window
-- Empty `__init__.py` files for future client subpackages (poller, recorder, audio, overlay, store, sync)
-
-Use `httpx` for HTTP requests (async, matching the full client's future HTTP client).
-
-**Files**
-- CREATE `client/__init__.py`
-- CREATE `client/main.py`
-- CREATE `client/config.toml`
-- CREATE `client/scaffold_ui/__init__.py`
-- CREATE `client/scaffold_ui/connection_tester.py`
-- CREATE `client/poller/__init__.py`
-- CREATE `client/recorder/__init__.py`
-- CREATE `client/audio/__init__.py`
-- CREATE `client/overlay/__init__.py`
-- CREATE `client/store/__init__.py`
-- CREATE `client/sync/__init__.py`
-
-**Implementation**
-
-1. Create all empty `__init__.py` files listed above.
-
-2. Create `client/config.toml`:
-```toml
-[backend]
-url = "http://localhost:8000/api/v1"
-api_key = "your-secret-key-here"
-upload_enabled = true
-upload_after_n_laps = 3
-```
-
-3. Create `client/scaffold_ui/connection_tester.py`:
-   - A PyQt6 `QWidget` subclass called `ConnectionTesterWindow`
-   - Layout (vertical):
-     - Label "Backend URL:" + QLineEdit (default from config.toml)
-     - Label "API Key:" + QLineEdit (echo mode password, default from config.toml)
-     - Horizontal row with two buttons: "Test Health" and "Test Auth"
-     - QLabel for status output (word wrap, monospace font)
-   - `Test Health` handler: uses `httpx.get(f"{url}/health")`, displays response status and body
-   - `Test Auth` handler: uses `httpx.get(f"{url}/sessions/nonexistent-test", headers={"X-API-Key": api_key})`, displays 404 (auth works) or 401 (auth failed)
-   - Use synchronous `httpx` (not async) for simplicity in PyQt6
-   - Parse config.toml using `tomllib` on Python 3.11+
-
-4. Create `client/main.py`:
-```python
-"""ACC Coaching Client -- Phase 1 Scaffolding UI."""
-import sys
-
-from PyQt6.QtWidgets import QApplication
-
-from scaffold_ui.connection_tester import ConnectionTesterWindow
-
-
-def main() -> int:
-    app = QApplication(sys.argv)
-    window = ConnectionTesterWindow()
-    window.setWindowTitle("ACC Coaching -- Backend Connection Tester")
-    window.resize(500, 300)
-    window.show()
-    return app.exec()
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-```
-
-**Acceptance Criteria**
-- [ ] `python client/main.py` opens a PyQt6 window without errors
-- [ ] Window shows URL and API key inputs with defaults from `config.toml`
-- [ ] "Test Health" button shows `{"status": "ok"}` when backend is running
-- [ ] "Test Auth" button shows "401 Unauthorized" when API key is wrong, or "404" (meaning auth passed) when key is correct
-- [ ] Window closes cleanly without errors
-
----
-
-## Post-Sprint Verification Steps
-
-After all tasks are complete:
-
-1. **Local smoke test**:
-   ```bash
-   # Start backend
-   docker compose up -d
-   # Wait for healthy
-   curl http://localhost:8000/api/v1/health
-
-   # Test with API key
-   curl -H "X-API-Key: test-key" -X POST http://localhost:8000/api/v1/sessions \
-     -H "Content-Type: application/json" \
-     -d '{"session_id":"test-1","session_type":"PRACTICE","circuit":"spa","car_model":"Ferrari 296 GT3","started_at":"2026-04-09T12:00:00Z"}'
-
-   # Run scaffolding UI
-   cd client && python main.py
-   ```
-
-2. **Remote deployment test**:
-   - Clone repo on remote server
-   - `cp .env.example .env` and fill in real values
-   - `docker compose up -d`
-   - From local machine, update `client/config.toml` with remote URL
-   - Test via scaffolding UI
-
-3. **Lint and type check**:
-   ```bash
-   ruff check .
-   mypy shared/ backend/
-   ```
+## Planning References
+
+- **SPEC.md** — Full feature specification
+- **CLAUDE.md** — Architecture rules and development commands
+- **Branch naming**: `sprint-N-<kebab-name>`
+- **PR workflow**: All sprint tasks → feature branch → PR (main) → Codex review → QA → merge
