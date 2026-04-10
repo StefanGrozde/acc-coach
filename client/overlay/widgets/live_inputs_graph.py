@@ -37,6 +37,7 @@ class LiveInputsGraphWidget(QWidget):
         self._brake_values = deque(maxlen=self._max_points)
         self._throttle_values = deque(maxlen=self._max_points)
         self._steer_values = deque(maxlen=self._max_points)
+        self._speed_values = deque(maxlen=self._max_points)
 
         self._plot_widget = pg.PlotWidget()
         self._plot_item = self._plot_widget.getPlotItem()
@@ -130,6 +131,7 @@ class LiveInputsGraphWidget(QWidget):
         self._brake_values.append(brake)
         self._throttle_values.append(throttle)
         self._steer_values.append(steer)
+        self._speed_values.append(speed)
 
         self._current_speed_label.setText(f"Speed: {speed:.1f} km/h")
         self._current_throttle_label.setText(f"Throttle: {throttle*100:.0f}%")
@@ -144,18 +146,16 @@ class LiveInputsGraphWidget(QWidget):
         brakes = list(self._brake_values)
         throttles = list(self._throttle_values)
         steers = list(self._steer_values)
+        speeds = list(self._speed_values)
 
         self._brake_curve.setData(timestamps, brakes)
         self._throttle_curve.setData(timestamps, throttles)
         self._steer_curve.setData(timestamps, steers)
         self._steer_curve.setVisible(self._steer_toggle.isChecked())
+        self._speed_curve.setData(timestamps, speeds)
 
         if timestamps:
             self._plot_item.setXRange(max(0, timestamps[-1] - self._window_seconds), timestamps[-1] + 1, padding=0.02)
-
-    def set_speed(self, speed_kmh: float) -> None:
-        """Update the current speed value."""
-        self._speed_curve.setData([self._timestamps[-1]] if self._timestamps else [], [speed_kmh])
 
     def _update_speed_view(self) -> None:
         self._speed_view.setGeometry(self._plot_item.vb.sceneBoundingRect())

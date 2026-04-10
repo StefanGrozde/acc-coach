@@ -57,6 +57,15 @@ def main() -> int:
     # Keep references to threads so they don't get garbage collected
     app.poller_threads = [physics_poller, graphics_poller, recorder, uploader]
 
+    # Ensure clean shutdown on exit
+    def cleanup():
+        recorder.stop()
+        recorder.join(timeout=2.0)
+        uploader.stop()
+        uploader.join(timeout=2.0)
+
+    app.aboutToQuit.connect(cleanup)
+
     return app.exec()
 
 
