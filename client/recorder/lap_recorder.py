@@ -145,7 +145,8 @@ class RecorderThread(threading.Thread):
         self._latest_track_grip_status = self._coerce_int(frame.get("track_grip_status"))
         self._latest_rain_intensity = self._coerce_int(frame.get("rain_intensity"))
 
-        is_live = status == ACCStatus.ACC_LIVE
+        # Treat ACC_LIVE and ACC_PAUSE as live - don't finalize laps on pause
+        is_live = status in (ACCStatus.ACC_LIVE, ACCStatus.ACC_PAUSE)
         if not is_live:
             self._session_is_live = False
             self._session_needs_reset = True
@@ -169,7 +170,8 @@ class RecorderThread(threading.Thread):
         self._session_is_live = True
 
     def _handle_physics_frame(self, conn: sqlite3.Connection, frame: dict[str, object]) -> None:
-        if self._latest_status != ACCStatus.ACC_LIVE:
+        # Accept physics frames during LIVE and PAUSED states
+        if self._latest_status not in (ACCStatus.ACC_LIVE, ACCStatus.ACC_PAUSE):
             return
 
         if self.current_session_id is None or self.current_lap is None or self.session_start_time is None:
