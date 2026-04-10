@@ -1,6 +1,6 @@
 [backend]
 url = "http://37.27.199.114:8000/api/v1"
 api_key = "a7b13e355040a417dab370eee01744d4cb9f003d29a0ac2a364b452b15b519f3"
-upload_enabled = true
+upload_enabled = false
 upload_after_n_laps = 3
 

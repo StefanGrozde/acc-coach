@@ -156,12 +156,16 @@ class BackendDataViewer(QWidget):
         self._sessions: list[dict[str, Any]] = []
         self._laps: list[dict[str, Any]] = []
         self._graph_window: QWidget | None = None
+        self._local_laps: list[dict[str, Any]] = []
 
         self._status_label = QLabel("Ready.")
         self._status_label.setWordWrap(True)
 
-        self._refresh_button = QPushButton("Refresh")
+        self._refresh_button = QPushButton("Refresh (Remote)")
         self._refresh_button.clicked.connect(self.refresh_sessions)
+
+        self._local_button = QPushButton("Load Local Laps")
+        self._local_button.clicked.connect(self.load_local_laps)
 
         self._sessions_list = QListWidget()
         self._sessions_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -201,6 +205,7 @@ class BackendDataViewer(QWidget):
 
         controls = QHBoxLayout()
         controls.addWidget(self._refresh_button)
+        controls.addWidget(self._local_button)
         controls.addStretch(1)
         controls.addWidget(self._status_label)
 
@@ -247,6 +252,68 @@ class BackendDataViewer(QWidget):
         response.raise_for_status()
         payload = response.json()
         return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
+
+    def load_local_laps(self) -> None:
+        import sqlite3
+
+        try:
+            laps = self._fetch_local_laps()
+        except Exception as exc:
+            logger.warning("Failed to load local laps: %s", exc)
+            self._set_status(f"Failed to load local laps: {exc}")
+            return
+
+        self._laps = laps
+        self._populate_laps(laps)
+        if not laps:
+            self._set_status("No local laps found. Drive a lap in ACC to record data.")
+        else:
+            self._set_status(f"Loaded {len(laps)} local laps from SQLite.")
+
+    def _fetch_local_laps(self) -> list[dict[str, Any]]:
+        import sqlite3
+
+        query = """
+            SELECT session_id, lap_number, lap_time_ms, is_valid,
+                   circuit, car_model, recorded_at, sector_times_ms
+            FROM laps
+            ORDER BY recorded_at DESC, session_id DESC, lap_number DESC
+        """
+
+        laps = []
+        try:
+            conn = sqlite3.connect(self._db_path)
+            try:
+                cursor = conn.execute(query)
+                for row in cursor.fetchall():
+                    laps.append({
+                        "session_id": row[0],
+                        "lap_number": row[1],
+                        "lap_time_ms": row[2],
+                        "is_valid": bool(row[3]),
+                        "circuit": row[4],
+                        "car_model": row[5],
+                        "recorded_at": row[6],
+                        "sector_times_ms": self._parse_sector_json(row[7]),
+                    })
+                return laps
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:
+            raise RuntimeError(f"Database error: {exc}") from exc
+
+    @staticmethod
+    def _parse_sector_json(value: str | None) -> list[int]:
+        if not value:
+            return []
+        try:
+            import json
+            data = json.loads(value)
+            if isinstance(data, list):
+                return [int(x) for x in data]
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+        return []
 
     def _populate_sessions(self, preferred_session_id: str | None = None) -> None:
         self._sessions_list.blockSignals(True)
@@ -331,11 +398,11 @@ class BackendDataViewer(QWidget):
             return
 
         lap = self._laps[row]
-        session = self._current_session()
-        if session is None:
+        session_id = _coerce_text(lap.get("session_id"))
+        if not session_id:
+            self._set_status("Selected lap is missing a session_id.")
             return
 
-        session_id = _coerce_text(session.get("session_id"))
         lap_number = lap.get("lap_number")
         try:
             lap_number_int = int(lap_number)
@@ -354,7 +421,7 @@ class BackendDataViewer(QWidget):
             raise ValueError("session_id is required")
 
         try:
-            from client.overlay.widgets.floating_graph_window import FloatingGraphWindow
+            from overlay.widgets.floating_graph_window import FloatingGraphWindow
         except Exception as exc:  # pragma: no cover - depends on optional Qt/graph runtime.
             raise RuntimeError(f"Graph window unavailable: {exc}") from exc
 
