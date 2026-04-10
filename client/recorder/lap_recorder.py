@@ -10,9 +10,9 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from client.poller.shared_memory import SharedMemoryReader
-from client.poller.structs import ACCStatus, SPageFileStatic
-from client.store.database import init_db, insert_frame, mark_lap_summary
+from poller.shared_memory import SharedMemoryReader
+from poller.structs import ACCStatus, SPageFileStatic
+from store.database import init_db, insert_frame, mark_lap_summary
 
 __all__ = ["RecorderThread"]
 

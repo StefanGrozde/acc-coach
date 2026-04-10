@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from client.overlay.widgets.inputs_graph import InputsGraphWidget
+from overlay.widgets.inputs_graph import InputsGraphWidget
 
 __all__ = ["FloatingGraphWindow"]
 

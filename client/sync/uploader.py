@@ -51,7 +51,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only when the depend
 
     httpx = _FallbackHTTPX()
 
-from client.store.database import init_db
+from store.database import init_db
 from shared.models import LapSummary
 
 __all__ = ["UploaderThread"]
