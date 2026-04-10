@@ -37,6 +37,10 @@ class PhysicsPollerThread(threading.Thread):
             "tyre_temp": _to_list(physics.tyreTemp),
             "tyre_pressure": _to_list(physics.tyrePressure),
             "wheel_slip": _to_list(physics.wheelSlip),
+            "tyreWear": _to_list(physics.tyreWear),
+            "tyreCoreTemperature": _to_list(physics.tyreCoreTemperature),
+            "airTemp": float(physics.airTemp),
+            "roadTemp": float(physics.roadTemp),
             "distance_m": distance_m,
         }
 

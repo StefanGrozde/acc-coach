@@ -49,7 +49,7 @@ def main() -> int:
 
     # Launch Qt UI (blocking call)
     app = QApplication(sys.argv)
-    window = BackendDataViewer(db_path=db_path)
+    window = BackendDataViewer(db_path=db_path, recorder=recorder)
     window.setWindowTitle("ACC Coaching -- Data Viewer")
     window.resize(1200, 800)
     window.show()

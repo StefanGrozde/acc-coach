@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 from pathlib import Path
+import sqlite3
 from typing import Any
 import tomllib
 
@@ -22,6 +23,8 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from store.database import delete_lap
 
 __all__ = ["BackendDataViewer"]
 
@@ -142,6 +145,7 @@ class BackendDataViewer(QWidget):
         db_path: Path | None = None,
         backend_url: str | None = None,
         api_key: str | None = None,
+        recorder: Any | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -152,6 +156,8 @@ class BackendDataViewer(QWidget):
         self._backend_url = _normalize_base_url(backend_url or config["url"])
         self._api_key = api_key if api_key is not None else config["api_key"]
         self._db_path = Path(db_path) if db_path is not None else _default_db_path()
+        self._recorder = recorder
+        self._recording_enabled = False
 
         self._sessions: list[dict[str, Any]] = []
         self._laps: list[dict[str, Any]] = []
@@ -168,8 +174,21 @@ class BackendDataViewer(QWidget):
         self._local_button = QPushButton("Load Local Laps")
         self._local_button.clicked.connect(self.load_local_laps)
 
+        self._recording_button = QPushButton()
+        self._recording_button.clicked.connect(self._toggle_recording)
+        self._recording_button.setEnabled(self._recorder is not None)
+        self._update_recording_button()
+
         self._live_button = QPushButton("Live Graph")
         self._live_button.clicked.connect(self.open_live_graph)
+
+        self._delete_button = QPushButton("Delete Lap")
+        self._delete_button.clicked.connect(self._delete_selected_lap)
+        self._delete_button.setStyleSheet(
+            "QPushButton { background-color: #6b4423; color: white; font-weight: 600; }"
+            "QPushButton:hover { background-color: #8b5a3a; }"
+            "QPushButton:pressed { background-color: #5a3a20; }"
+        )
 
         self._sessions_list = QListWidget()
         self._sessions_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -210,7 +229,9 @@ class BackendDataViewer(QWidget):
         controls = QHBoxLayout()
         controls.addWidget(self._refresh_button)
         controls.addWidget(self._local_button)
+        controls.addWidget(self._recording_button)
         controls.addWidget(self._live_button)
+        controls.addWidget(self._delete_button)
         controls.addStretch(1)
         controls.addWidget(self._status_label)
 
@@ -219,6 +240,91 @@ class BackendDataViewer(QWidget):
         layout.addWidget(splitter)
 
         self.refresh_sessions()
+
+    def _update_recording_button(self) -> None:
+        if self._recording_enabled:
+            self._recording_button.setText("Stop Recording")
+            self._recording_button.setStyleSheet(
+                "QPushButton { background-color: #1f7a1f; color: white; font-weight: 600; }"
+                "QPushButton:hover { background-color: #2a8a2a; }"
+                "QPushButton:pressed { background-color: #176117; }"
+            )
+        else:
+            self._recording_button.setText("Start Recording")
+            self._recording_button.setStyleSheet(
+                "QPushButton { background-color: #9c2f2f; color: white; font-weight: 600; }"
+                "QPushButton:hover { background-color: #b03939; }"
+                "QPushButton:pressed { background-color: #822626; }"
+            )
+
+        if self._recorder is None:
+            self._recording_button.setToolTip("Recorder is unavailable.")
+        elif self._recording_enabled:
+            self._recording_button.setToolTip("Recording is active. Click to stop recording laps.")
+        else:
+            self._recording_button.setToolTip("Recording is stopped. Click to start recording laps.")
+
+    def _toggle_recording(self) -> None:
+        if self._recording_enabled:
+            self.stop_recording()
+        else:
+            self.start_recording()
+
+    def start_recording(self) -> None:
+        if self._recorder is None:
+            self._set_status("Recording controls are unavailable.")
+            return
+        try:
+            self._recorder.start_recording()
+        except Exception as exc:
+            logger.warning("Failed to start recording: %s", exc)
+            self._set_status(f"Failed to start recording: {exc}")
+            return
+
+        self._recording_enabled = True
+        self._update_recording_button()
+        self._set_status("Recording enabled.")
+
+    def stop_recording(self) -> None:
+        if self._recorder is None:
+            self._set_status("Recording controls are unavailable.")
+            return
+        try:
+            self._recorder.stop_recording()
+        except Exception as exc:
+            logger.warning("Failed to stop recording: %s", exc)
+            self._set_status(f"Failed to stop recording: {exc}")
+            return
+
+        self._recording_enabled = False
+        self._update_recording_button()
+        self._set_status("Recording disabled.")
+
+    def _delete_selected_lap(self) -> None:
+        selected = self._laps_table.selectedItems()
+        if not selected:
+            self._set_status("No lap selected to delete.")
+            return
+
+        row = selected[0].row()
+        lap = self._laps[row]
+        lap_id = lap.get("id")
+        if not lap_id:
+            self._set_status("Selected lap has no ID.")
+            return
+
+        try:
+            with sqlite3.connect(self._db_path) as conn:
+                deleted = delete_lap(conn, int(lap_id))
+                if deleted:
+                    self._set_status(f"Deleted lap {lap.get('lap_number', row + 1)}.")
+                    self._laps.pop(row)
+                    self._laps_table.removeRow(row)
+                else:
+                    self._set_status("Failed to delete lap.")
+        except Exception as exc:
+            logger.warning("Failed to delete lap: %s", exc)
+            self._set_status(f"Error deleting lap: {exc}")
 
     def refresh_sessions(self) -> None:
         previous_session_id = self._current_session_id()
@@ -279,8 +385,8 @@ class BackendDataViewer(QWidget):
         import sqlite3
 
         query = """
-            SELECT session_id, lap_number, lap_time_ms, is_valid,
-                   circuit, car_model, recorded_at
+            SELECT id, session_id, lap_number, lap_time_ms, is_valid,
+                   circuit, car_model, recorded_at, summary_json
             FROM laps
             ORDER BY recorded_at DESC, session_id DESC, lap_number DESC
         """
@@ -291,15 +397,18 @@ class BackendDataViewer(QWidget):
             try:
                 cursor = conn.execute(query)
                 for row in cursor.fetchall():
+                    summary_json = row[8]
+                    sector_times = self._parse_sector_json(summary_json)
                     laps.append({
-                        "session_id": row[0],
-                        "lap_number": row[1],
-                        "lap_time_ms": row[2],
-                        "is_valid": bool(row[3]),
-                        "circuit": row[4],
-                        "car_model": row[5],
-                        "recorded_at": row[6],
-                        "sector_times_ms": [],
+                        "id": row[0],
+                        "session_id": row[1],
+                        "lap_number": row[2],
+                        "lap_time_ms": row[3],
+                        "is_valid": bool(row[4]),
+                        "circuit": row[5],
+                        "car_model": row[6],
+                        "recorded_at": row[7],
+                        "sector_times_ms": sector_times,
                     })
                 return laps
             finally:

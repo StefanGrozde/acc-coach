@@ -22,6 +22,10 @@ class GraphicsPollerThread(threading.Thread):
             "packet_id": int(graphics.packetId),
             "completed_laps": int(graphics.completedLaps),
             "session_time_left": float(graphics.sessionTimeLeft),
+            "current_sector_index": int(graphics.currentSectorIndex),
+            "last_sector_time": int(graphics.lastSectorTime),
+            "track_grip_status": int(graphics.trackGripStatus),
+            "rain_intensity": int(graphics.rainIntensity),
             "status": int(graphics.status),
             "penalty": int(graphics.penalty),
         }
